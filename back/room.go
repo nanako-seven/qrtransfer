@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"math/rand"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +26,7 @@ type Room struct {
 	ClientOutSignal chan ClientUUID
 	SetQRCodeSignal chan string
 	GetQRCodeSignal chan chan string
+	ClosedSignal    chan struct{}
 }
 
 func NewRoom(maxTimeAllowed time.Duration) *Room {
@@ -44,6 +44,7 @@ func NewRoom(maxTimeAllowed time.Duration) *Room {
 }
 
 func (r *Room) run() {
+loop:
 	for {
 		r.lastActiveTime = time.Now()
 		select {
@@ -51,7 +52,7 @@ func (r *Room) run() {
 			for _, v := range r.clients {
 				v.CloseSignal <- true
 			}
-			return
+			break loop
 		case x := <-r.ClientInSignal:
 			r.clients[x.UUID] = x.Cli
 		case x := <-r.ClientOutSignal:
@@ -65,23 +66,24 @@ func (r *Room) run() {
 			x <- r.qrCode
 		}
 		if time.Since(r.lastActiveTime) > r.maxTime {
-			return
+			break loop
 		}
 	}
+	close(r.ClosedSignal)
 }
 
 type RoomPassword uint32
 
 type CreateRoomCall struct {
-	Name   string
-	Passwd chan RoomPassword
-	Err    chan error
+	Name     string
+	Password RoomPassword
+	Err      chan error
 }
 
-type DeleteRoomCall struct {
-	Name   string
-	Passwd RoomPassword
-	Err    chan error
+type GetRoomCall struct {
+	Name    string
+	Element chan *RoomInfo
+	Err     chan error
 }
 
 type RoomInfo struct {
@@ -92,19 +94,25 @@ type RoomInfo struct {
 type RoomPool struct {
 	pool             map[string]*RoomInfo
 	CreateRoomSignal chan *CreateRoomCall
-	DeleteRoomSignal chan *DeleteRoomCall
-	GetRoomsSignal   chan chan []string
+	deleteRoomSignal chan string
+	GetRoomSignal    chan *GetRoomCall
 }
 
 func NewRoomPool() *RoomPool {
 	pool := &RoomPool{
 		pool:             make(map[string]*RoomInfo),
 		CreateRoomSignal: make(chan *CreateRoomCall),
-		DeleteRoomSignal: make(chan *DeleteRoomCall),
-		GetRoomsSignal:   make(chan chan []string),
+		deleteRoomSignal: make(chan string),
+		GetRoomSignal:    make(chan *GetRoomCall),
 	}
 	pool.run()
 	return pool
+}
+
+func (p *RoomPool) monitorRoom(name string) {
+	room := p.pool[name]
+	<-room.room.ClosedSignal
+	p.deleteRoomSignal <- name
 }
 
 func (p *RoomPool) run() {
@@ -113,36 +121,24 @@ func (p *RoomPool) run() {
 		case x := <-p.CreateRoomSignal:
 			_, ok := p.pool[x.Name]
 			if ok {
-				x.Passwd <- 0
 				x.Err <- errors.New("room name already exists")
 				break
 			}
-			passwd := RoomPassword(rand.Uint32())
 			p.pool[x.Name] = &RoomInfo{
 				room:   NewRoom(DefaultMaxTime),
-				passwd: passwd,
+				passwd: x.Password,
 			}
-			x.Passwd <- passwd
 			x.Err <- nil
-		case x := <-p.DeleteRoomSignal:
+			go p.monitorRoom(x.Name)
+		case x := <-p.deleteRoomSignal:
+			delete(p.pool, x)
+		case x := <-p.GetRoomSignal:
 			room, ok := p.pool[x.Name]
 			if !ok {
-				x.Err <- errors.New("could not delete a non-exist room")
+				x.Err <- errors.New("could not get a non-exist room")
 				break
 			}
-			if room.passwd != x.Passwd {
-				x.Err <- errors.New("wrong password")
-				break
-			}
-			room.room.CloseSignal <- true
-			delete(p.pool, x.Name)
-			x.Err <- nil
-		case x := <-p.GetRoomsSignal:
-			var names []string
-			for k, _ := range p.pool {
-				names = append(names, k)
-			}
-			x <- names
+			x.Element <- room
 		}
 	}
 }
