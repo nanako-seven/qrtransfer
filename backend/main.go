@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,17 +21,6 @@ func (f *fsWithPrefix) Open(p string) (fs.File, error) {
 }
 
 func main() {
-	const maxTime = time.Minute
-	room := NewRoom(maxTime)
-	go func() {
-		ticker := time.Tick(600 * time.Second)
-		for {
-			<-ticker
-			roomOld := room
-			room = NewRoom(maxTime)
-			roomOld.CloseSignal <- true
-		}
-	}()
 	r := gin.Default()
 	server := &Server{}
 	r.GET("/create-room", server.CreateRoomHandler)

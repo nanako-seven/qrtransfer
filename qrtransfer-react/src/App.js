@@ -1,25 +1,42 @@
-import logo from './logo.svg';
-import './App.css';
+import React, { Component } from 'react'
+import QrReader from 'react-qr-scanner'
 
-function App() {
-  return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
-    </div>
-  );
+class Test extends Component {
+  constructor(props) {
+    super(props)
+    this.state = {
+      delay: 100,
+      result: 'No result',
+    }
+
+    this.handleScan = this.handleScan.bind(this)
+  }
+  handleScan(data) {
+    this.setState({
+      result: data,
+    })
+  }
+  handleError(err) {
+    console.error(err)
+  }
+  render() {
+    const previewStyle = {
+      height: 240,
+      width: 320,
+    }
+
+    return (
+      <div>
+        <QrReader
+          delay={this.state.delay}
+          style={previewStyle}
+          onError={this.handleError}
+          onScan={this.handleScan}
+        />
+        <p>{this.state.result && this.state.result.text}</p>
+      </div>
+    )
+  }
 }
 
-export default App;
+export default Test

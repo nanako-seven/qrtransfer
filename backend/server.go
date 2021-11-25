@@ -1,17 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
-	"log"
 	"math/rand"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/net/websocket"
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
 type Server struct {
-	rooms RoomPool
+	roomPool RoomPool
 }
 
 type CreateRoomQuery struct {
@@ -29,7 +30,7 @@ func (s *Server) CreateRoomHandler(c *gin.Context) {
 	id := query.RoomId
 	passwd := RoomPassword(rand.Uint32())
 	ch := make(chan error)
-	s.rooms.CreateRoomSignal <- &CreateRoomCall{
+	s.roomPool.createRoomSignal <- &createRoomCall{
 		Name:     id,
 		Password: passwd,
 		Err:      ch,
@@ -49,15 +50,7 @@ type DeleteRoomQuery struct {
 }
 
 func (s *Server) getRoom(id string, passwd RoomPassword) (*RoomInfo, error) {
-	errCh := make(chan error)
-	eleCh := make(chan *RoomInfo)
-	s.rooms.GetRoomSignal <- &GetRoomCall{
-		Name:    id,
-		Element: eleCh,
-		Err:     errCh,
-	}
-	ele := <-eleCh
-	err := <-errCh
+	ele, err := s.roomPool.GetRoom(id)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +76,7 @@ func (s *Server) DeleteRoomHandler(c *gin.Context) {
 		c.String(http.StatusBadRequest, "")
 		return
 	}
-	ele.room.CloseSignal <- true
+	ele.room.Close()
 	c.String(http.StatusOK, "")
 }
 
@@ -113,41 +106,97 @@ func (s *Server) UpdateQRCodeHanlder(c *gin.Context) {
 		c.String(http.StatusBadRequest, "")
 		return
 	}
-	ele.room.SetQRCodeSignal <- query.QRCode
+	ele.room.setQRCodeSignal <- query.QRCode
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// websocket 不是很会，我得学习一下
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+}
+
+type ConnectRequest struct {
+	RoomId string
+}
+
+const (
+	ConnectOK = iota
+	ConnectRefused
+	QRCodeChanged
+	ConnectClose
+)
+
+type ConnectResponse struct {
+	Type    int
+	Message string
+}
+
 func (s *Server) ConnectRoomHandler(c *gin.Context) {
 	if !c.IsWebsocket() {
 		c.JSON(http.StatusBadRequest, gin.H{})
 		return
 	}
-	websocket.Handler(func(conn *websocket.Conn) {
-		defer conn.Close()
-		signal := make(chan (int))
-		report := make(chan (error))
-
-		roomLock.Lock()
-		_, err := conn.Write([]byte(room.QR))
-		if err != nil {
-			roomLock.Unlock()
+	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		logErr(err, "could not upgrade to websocket")
+		return
+	}
+	defer ws.Close()
+	mt, message, err := ws.ReadMessage()
+	if err != nil {
+		logErr(err, "could not read message")
+		return
+	}
+	req := ConnectRequest{}
+	err = json.Unmarshal(message, &req)
+	if err != nil {
+		logErr(err, "invalid request")
+		return
+	}
+	roomInfo, _ := s.roomPool.GetRoom(req.RoomId)
+	room := roomInfo.room
+	id := uuid.New()
+	cli := NewClient()
+	call2 := &clientInCall{
+		Cli:  cli,
+		UUID: ClientUUID(id),
+	}
+	room.clientInSignal <- call2
+	defer func() {
+		room.clientOutSignal <- ClientUUID(id)
+	}()
+	msg, _ := json.Marshal(&ConnectResponse{
+		Type: ConnectOK,
+	})
+	err = ws.WriteMessage(mt, msg)
+	if err != nil {
+		logErr(err, "could not write message")
+		return
+	}
+	for {
+		select {
+		case <-cli.QRCodeChangedSignal:
+			ch := make(chan string)
+			room.getQRCodeSignal <- ch
+			code := <-ch
+			msg, _ := json.Marshal(&ConnectResponse{
+				Type:    QRCodeChanged,
+				Message: code,
+			})
+			err = ws.WriteMessage(mt, msg)
+			if err != nil {
+				logErr(err, "could not write message")
+				return
+			}
+		case <-cli.CloseSignal:
+			msg, _ := json.Marshal(&ConnectResponse{
+				Type: ConnectClose,
+			})
+			err = ws.WriteMessage(mt, msg)
+			if err != nil {
+				logErr(err, "could not write message")
+			}
 			return
 		}
-		room.AddClient(&Client{CloseSignal: signal, Report: report, Alive: true})
-		log.Println("adding client")
-		roomLock.Unlock()
-		for {
-			s := <-signal
-			if s == 1 {
-				log.Println("closing client")
-				return
-			}
-			_, err := conn.Write([]byte(room.QR))
-			report <- err
-			if err != nil {
-				return
-			}
-		}
-	}).ServeHTTP(c.Writer, c.Request)
+	}
 }
