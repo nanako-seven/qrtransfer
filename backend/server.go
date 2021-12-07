@@ -12,7 +12,13 @@ import (
 )
 
 type Server struct {
-	roomPool RoomPool
+	roomPool *RoomPool
+}
+
+func NewServer() *Server {
+	return &Server{
+		roomPool: NewRoomPool(),
+	}
 }
 
 type CreateRoomQuery struct {
@@ -113,6 +119,9 @@ func (s *Server) UpdateQRCodeHanlder(c *gin.Context) {
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
 }
 
 type ConnectRequest struct {

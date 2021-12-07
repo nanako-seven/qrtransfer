@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,9 +21,19 @@ func (f *fsWithPrefix) Open(p string) (fs.File, error) {
 	return f.Fs.Open(path.Join("dist", p))
 }
 
+func testFunc(server *Server) {
+	clock := time.Tick(time.Second)
+	for {
+		<-clock
+		info, _ := server.roomPool.GetRoom("room1")
+		info.room.SetQRCode("qrcode")
+	}
+}
+
 func main() {
 	r := gin.Default()
-	server := &Server{}
+	server := NewServer()
+	server.roomPool.CreateRoom("room1", RoomPassword(1))
 	r.GET("/create-room", server.CreateRoomHandler)
 	r.GET("/delete-room", server.DeleteRoomHandler)
 	r.GET("/connect-room", server.ConnectRoomHandler)
